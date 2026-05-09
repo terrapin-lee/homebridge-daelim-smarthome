@@ -1,7 +1,6 @@
 import {DaelimClient} from "../../../core/daelim/daelim-client";
-import {API, CharacteristicGetCallback, Logging, PlatformAccessory, Service} from "homebridge";
+import {API, CharacteristicGetCallback, Logging, PlatformAccessory, Service, type WithUUID} from "homebridge";
 import {Utils} from "../../../core/utils";
-import {WithUUID} from "hap-nodejs";
 import {DaelimConfig, Device} from "../../../core/interfaces/daelim-config";
 import {DeviceSubTypes, LoginSubTypes, Types} from "../../../core/daelim/fields";
 

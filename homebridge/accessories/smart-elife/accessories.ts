@@ -1,7 +1,6 @@
 import SmartELifeClient, {Listener, PushListener} from "../../../core/smart-elife/smart-elife-client";
-import {API, Logging, PlatformAccessory, Service} from "homebridge";
+import {API, Logging, PlatformAccessory, Service, type WithUUID} from "homebridge";
 import {Device, DeviceType, PushType, SmartELifeConfig} from "../../../core/interfaces/smart-elife-config";
-import {WithUUID} from "hap-nodejs";
 import {Utils} from "../../../core/utils";
 import {getWallPadCapabilities, WallPadCapabilities} from "../../../core/smart-elife/parsers/version-parsers";
 
