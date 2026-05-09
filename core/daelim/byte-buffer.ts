@@ -5,7 +5,9 @@ export class ByteBuffer {
     }
 
     static wrap(bytes: Uint8Array): ByteBuffer {
-        return new ByteBuffer(bytes.buffer);
+        const buffer = new ArrayBuffer(bytes.byteLength);
+        new Uint8Array(buffer).set(bytes);
+        return new ByteBuffer(buffer);
     }
 
     private dataView: DataView;

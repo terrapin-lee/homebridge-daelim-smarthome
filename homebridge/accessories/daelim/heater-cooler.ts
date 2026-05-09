@@ -7,11 +7,11 @@ import {
     CharacteristicValue,
     Logging,
     PlatformAccessory,
-    Service
+    Service,
+    type WithUUID
 } from "homebridge";
 import {DeviceSubTypes, Types} from "../../../core/daelim/fields";
 import {DaelimConfig} from "../../../core/interfaces/daelim-config";
-import {WithUUID} from "hap-nodejs";
 
 export interface HeaterCoolerAccessoryInterface extends AccessoryInterface {
 
