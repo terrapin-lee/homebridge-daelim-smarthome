@@ -548,7 +548,8 @@ export default class AirConditionerAccessories extends Accessories<AirConditione
             for(const device of devices) {
                 const active = device.op["status"] === "on";
                 const currentTemperature = device.op["current_temp"] ? Number(device.op["current_temp"]) : MIN_TEMPERATURE || MIN_TEMPERATURE;
-                const desiredTemperature = device.op["desired_temp"] ? Number(device.op["desired_temp"]) : MIN_TEMPERATURE || MIN_TEMPERATURE;
+                const targetTemperature = device.op["desired_temp"] ?? device.op["set_temp"];
+                const desiredTemperature = targetTemperature ? Number(targetTemperature) : MIN_TEMPERATURE || MIN_TEMPERATURE;
                 const rotationSpeed = active ? device.op["wind_speed"] as RotationSpeed || RotationSpeed.OFF : RotationSpeed.OFF;
                 const operationMode = device.op["mode"] as Mode || Mode.AUTO;
                 const accessory = this.addOrGetAccessory({
