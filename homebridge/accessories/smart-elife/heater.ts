@@ -116,7 +116,8 @@ export default class HeaterAccessories extends ActiveAccessories<HeaterAccessory
             for(const device of devices) {
                 const active = device.op["status"] === "on";
                 const currentTemperature = device.op["current_temp"] ? Number(device.op["current_temp"]) : MIN_TEMPERATURE || MIN_TEMPERATURE;
-                const desiredTemperature = device.op["desired_temp"] ? Number(device.op["desired_temp"]) : MIN_TEMPERATURE || MIN_TEMPERATURE;
+                const targetTemperature = device.op["desired_temp"] ?? device.op["set_temp"];
+                const desiredTemperature = targetTemperature ? Number(targetTemperature) : MIN_TEMPERATURE || MIN_TEMPERATURE;
                 const accessory = this.addOrGetAccessory({
                     deviceId: device.deviceId,
                     deviceType: device.deviceType,
