@@ -37,24 +37,24 @@
     "url": "https://github.com/OrigamiDream/homebridge-daelim-smarthome/issues"
   },
   "devDependencies": {
-    "@types/node": "^14.15.0",
-    "@types/node-fetch": "^2.5.8",
-    "@types/readline-sync": "^1.4.3",
-    "@types/ws": "^8.18.1",
-    "canvas": "^3.2.1",
-    "homebridge": "^2.0.1",
-    "rimraf": "^3.0.2",
-    "typescript": "^6.0.3"
+    "@types/node": "14.18.63",
+    "@types/node-fetch": "2.5.8",
+    "@types/readline-sync": "1.4.3",
+    "@types/ws": "8.18.1",
+    "canvas": "3.2.1",
+    "homebridge": "2.0.1",
+    "rimraf": "3.0.2",
+    "typescript": "6.0.3"
   },
   "dependencies": {
-    "@eneris/push-receiver": "^4.2.0",
-    "@homebridge/plugin-ui-utils": "^0.0.19",
+    "@eneris/push-receiver": "4.2.0",
+    "@homebridge/plugin-ui-utils": "0.0.19",
     "axios": "1.16.0",
-    "ffmpeg-for-homebridge": "^2.2.1",
-    "node-fetch": "^2.6.1",
-    "pick-port": "^1.0.1",
-    "readline-sync": "^1.4.10",
-    "ws": "^8.19.0"
+    "ffmpeg-for-homebridge": "2.2.1",
+    "node-fetch": "2.6.7",
+    "pick-port": "1.0.1",
+    "readline-sync": "1.4.10",
+    "ws": "8.21.0"
   },
   "funding": [
     {

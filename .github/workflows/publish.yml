@@ -32,11 +32,11 @@ jobs:
     steps:
       - name: Checkout (prod)
         if: github.event_name == 'push'
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Checkout (beta)
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch }}
 
@@ -44,12 +44,14 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: fregante/setup-git-user@v1
 
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
+      - run: npm audit signatures
 
       # Beta release flow
       - name: Bump beta version
@@ -60,7 +62,7 @@ jobs:
         run: git push origin "${{ github.event.inputs.branch }}"
       - name: Publish beta to npmjs
         if: github.event_name == 'workflow_dispatch'
-        run: npm publish --tag beta
+        run: npm publish --tag beta --provenance
 
       # Production release flow
       - name: Parse release info
@@ -87,4 +89,4 @@ jobs:
           prerelease: false
       - name: Publish production to npmjs
         if: github.event_name == 'push'
-        run: npm publish
+        run: npm publish --provenance
