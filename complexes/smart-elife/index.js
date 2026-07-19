@@ -102,6 +102,28 @@ function extractList(data, preferredKeys = []) {
     return list.map((v) => String(v));
 }
 
+function stringifyComplexes(complexes) {
+    if (complexes.length === 0) return "[]";
+
+    const serialized = complexes.map((complex) => {
+        const { dongs, ...details } = complex;
+        const lines = JSON.stringify(details, null, 2).split("\n");
+
+        lines[lines.length - 2] += ",";
+        lines.pop();
+        lines.push('  "dongs": [');
+        dongs.forEach((dong, index) => {
+            const comma = index < dongs.length - 1 ? "," : "";
+            lines.push(`    ${JSON.stringify(dong)}${comma}`);
+        });
+        lines.push("  ]", "}");
+
+        return lines.map((line) => `  ${line}`).join("\n");
+    });
+
+    return `[\n${serialized.join(",\n")}\n]`;
+}
+
 async function fetchDongs(csrf, danjiKey) {
     const resp = await fetchJson(`${BASE_URL}/login/selectDong.ajax`, {
         method: "POST",
@@ -176,7 +198,7 @@ async function main() {
     const workers = Array.from({ length: concurrency }, () => worker());
     await Promise.all(workers);
 
-    fs.writeFileSync("./complexes/smart-elife/complexes.json", JSON.stringify(mapped, null, 2), "utf-8");
+    fs.writeFileSync("./complexes/smart-elife/complexes.json", stringifyComplexes(mapped), "utf-8");
     console.log(`Wrote ${mapped.length} complexes to complexes.json`);
 }
 
