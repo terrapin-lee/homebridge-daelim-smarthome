@@ -46,6 +46,9 @@ export default class VentAccessories extends ActiveAccessories<VentAccessoryInte
             case RotationSpeed.LOW: return ROTATION_SPEED_STEP;
             case RotationSpeed.MIDDLE: return ROTATION_SPEED_STEP * 2;
             case RotationSpeed.HIGH: return 100;
+            // An unrecognized wind_speed (cast to the enum on ingest) would otherwise
+            // return undefined and be pushed to HomeKit's RotationSpeed characteristic.
+            default: return 0;
         }
     }
 
@@ -151,9 +154,18 @@ export default class VentAccessories extends ActiveAccessories<VentAccessoryInte
                 context.rotationSpeed = newSpeed;
                 if(!context.active) {
                     this.log.debug(`Vent :: SET :: Automatically turned on Vent.`);
-                    await this.setDeviceState({
+                    const turnedOn = await this.setDeviceState({
                         ...device, op: { control: "on" },
                     });
+                    if(!turnedOn) {
+                        callback(new Error("Failed to set the device state."));
+                        return;
+                    }
+                    // Mark active BEFORE deferring the fan-speed write. `setDeviceFanSpeed`
+                    // short-circuits on `!context.active` at call time, so without this the
+                    // just-requested speed is silently dropped and the vent turns on at its
+                    // previous speed instead of the one the user picked.
+                    context.active = true;
                 } else if(newSpeed === RotationSpeed.OFF) {
                     // HomeKit automatically emits INACTIVE when rotation speed is 0.
                     callback(undefined);
