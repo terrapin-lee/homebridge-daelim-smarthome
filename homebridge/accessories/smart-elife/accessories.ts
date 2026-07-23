@@ -140,9 +140,9 @@ export default class Accessories<T extends AccessoryInterface> {
         return accessory.getService(serviceType.UUID) || accessory.addService(serviceType, context.displayName, serviceType.UUID);
     }
 
-    protected findDevice(deviceId: string): Device | undefined {
+    protected findDevice(deviceId: string, deviceType: DeviceType = this.deviceType): Device | undefined {
         const devices = (this.config.devices || [])
-            .filter((dev) => dev.deviceType === this.deviceType && dev.deviceId === deviceId);
+            .filter((dev) => dev.deviceType === deviceType && dev.deviceId === deviceId);
         return !!devices ? devices[0] : undefined;
     }
 
@@ -156,11 +156,11 @@ export default class Accessories<T extends AccessoryInterface> {
         return undefined;
     }
 
-    protected parseDevices(data: any): DeviceWithOp[] {
+    protected parseDevices(data: any, deviceType: DeviceType = this.deviceType): DeviceWithOp[] {
         const devices = data["devices"];
         const newDevices: DeviceWithOp[] = [];
         for(const device of devices) {
-            const dev = this.findDevice(device["uid"]);
+            const dev = this.findDevice(device["uid"], deviceType);
             if(!dev)
                 continue;
             const op = device["operation"];
@@ -181,24 +181,24 @@ export default class Accessories<T extends AccessoryInterface> {
         return await this.client.sendDeviceControlOp(device, device.op);
     }
 
-    protected addListener(listener: Listener) {
-        this.client.addListener(this.deviceType, listener);
+    protected addListener(listener: Listener, deviceType: DeviceType = this.deviceType) {
+        this.client.addListener(deviceType, listener);
     }
 
-    protected addDeviceListener(deviceListener: DeviceListener) {
+    protected addDeviceListener(deviceListener: DeviceListener, deviceType: DeviceType = this.deviceType) {
         this.addListener((data, error) => {
             let devices: DeviceWithOp[];
             if(!data || !data["devices"]) {
-                this.log.warn(`Devices (${this.deviceType.toString()}) not found: (${error.code}) ${error.message ?? "unknown reason"}`);
+                this.log.warn(`Devices (${deviceType.toString()}) not found: (${error.code}) ${error.message ?? "unknown reason"}`);
                 devices = [];
             } else {
-                devices = this.parseDevices(data);
+                devices = this.parseDevices(data, deviceType);
             }
             if(devices.length === 0)
-                this.log.warn("No devices op received for %s. Are the devices disconnected from WallPad?", this.deviceType.toString());
+                this.log.warn("No devices op received for %s. Are the devices disconnected from WallPad?", deviceType.toString());
 
             deviceListener(devices);
-        });
+        }, deviceType);
     }
 
     protected addPushListener(pushType: PushType, listener: PushListener) {
