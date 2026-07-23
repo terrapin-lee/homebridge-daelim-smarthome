@@ -8,15 +8,20 @@ import {
     PlatformAccessory
 } from "homebridge";
 import {Device, DeviceType, SmartELifeConfig} from "../../../core/interfaces/smart-elife-config";
+import {
+    beginElevatorCall,
+    completeElevatorCallRequest,
+    ElevatorCallState,
+    isElevatorCallActive,
+    normalizeElevatorCallState,
+    reduceElevatorServerEvent,
+} from "../../../core/smart-elife/elevator-protocol";
 import Timeout = NodeJS.Timeout;
 
 interface ElevatorAccessoryInterface extends AccessoryInterface {
     switchTimer?: Timeout
-    switchLocked: boolean
-    // Set by `rerection: "progressing"`, cleared on arrival. Only while this holds does the
-    // switch refuse to be turned off - the car really is on its way and cannot be recalled.
-    // Without confirmation (socket down, call silently dropped) the switch stays dismissable.
-    callProgressing: boolean
+    callState: ElevatorCallState
+    requestSequence: number
 
     motionTimer?: Timeout
     motionDetected: boolean
@@ -37,101 +42,160 @@ export default class ElevatorAccessories extends Accessories<ElevatorAccessoryIn
         super(log, api, config, DeviceType.ELEVATOR, [api.hap.Service.Switch, api.hap.Service.MotionSensor]);
     }
 
+    private clearSwitchTimer(context: ElevatorAccessoryInterface) {
+        if(context.switchTimer) {
+            clearTimeout(context.switchTimer);
+            context.switchTimer = undefined;
+        }
+    }
+
+    private updateSwitch(accessory: PlatformAccessory) {
+        const context = this.getAccessoryInterface(accessory);
+        context.callState = normalizeElevatorCallState(context.callState);
+        this.getService(accessory, this.api.hap.Service.Switch)
+            .getCharacteristic(this.api.hap.Characteristic.On)
+            .updateValue(isElevatorCallActive(context.callState));
+    }
+
+    private queueSwitchUpdate(accessory: PlatformAccessory) {
+        setTimeout(() => this.updateSwitch(accessory), 0);
+    }
+
+    private releaseCall(accessory: PlatformAccessory) {
+        const context = this.getAccessoryInterface(accessory);
+        this.clearSwitchTimer(context);
+        context.callState = ElevatorCallState.IDLE;
+        this.updateSwitch(accessory);
+    }
+
+    private armSwitchFallback(accessory: PlatformAccessory, device: Device) {
+        const context = this.getAccessoryInterface(accessory);
+        if(context.switchTimer) return;
+
+        let timer: Timeout;
+        timer = setTimeout(() => {
+            const current = this.getAccessoryInterface(accessory);
+            if(current.switchTimer !== timer) return;
+
+            current.switchTimer = undefined;
+            current.callState = ElevatorCallState.IDLE;
+            this.updateSwitch(accessory);
+        }, (device.duration?.elevator ?? ELEVATOR_CALL_FALLBACK_TIMEOUT_SECONDS) * 1000);
+        context.switchTimer = timer;
+    }
+
+    private triggerArrivalMotion(accessory: PlatformAccessory) {
+        const context = this.getAccessoryInterface(accessory);
+        if(context.motionTimer) clearTimeout(context.motionTimer);
+
+        context.motionDetected = true;
+        this.getService(accessory, this.api.hap.Service.MotionSensor)
+            .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
+            .updateValue(true);
+
+        let timer: Timeout;
+        timer = setTimeout(() => {
+            const current = this.getAccessoryInterface(accessory);
+            if(current.motionTimer !== timer) return;
+
+            current.motionTimer = undefined;
+            current.motionDetected = false;
+            this.getService(accessory, this.api.hap.Service.MotionSensor)
+                .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
+                .updateValue(false);
+        }, ELEVATOR_MOTION_DURATION_TIMEOUT_SECONDS * 1000);
+        context.motionTimer = timer;
+    }
+
     configureAccessory(accessory: PlatformAccessory) {
         super.configureAccessory(accessory);
         this.getService(accessory, this.api.hap.Service.Switch)
             .getCharacteristic(this.api.hap.Characteristic.On)
             .on(CharacteristicEventTypes.SET, async (value: CharacteristicValue, callback: CharacteristicSetCallback) => {
                 const context = this.getAccessoryInterface(accessory);
+                context.callState = normalizeElevatorCallState(context.callState);
+                context.requestSequence = context.requestSequence || 0;
+
                 const called = value as boolean;
                 if(!called) {
-                    if(context.callProgressing) {
-                        // The car is confirmed on its way and there is no way to recall it,
-                        // so snap the switch back rather than pretend it was cancelled.
-                        // Must be `updateValue`, not `setCharacteristic` - the latter re-enters
-                        // this very handler, and when `switchLocked` is already false it
-                        // re-arms itself every tick, spinning forever.
-                        setTimeout(() => {
-                            this.getService(accessory, this.api.hap.Service.Switch)
-                                .getCharacteristic(this.api.hap.Characteristic.On)
-                                .updateValue(context.switchLocked);
-                        }, 0);
-                        callback(undefined);
-                        return;
-                    }
-                    // No `progressing` seen, so nothing is known to be moving - let it be
-                    // dismissed instead of leaving a switch nobody can turn off until the
-                    // fallback expires.
-                    if(context.switchTimer) clearTimeout(context.switchTimer);
-                    context.switchTimer = undefined;
-                    context.switchLocked = false;
+                    // The app disables its button once the server reports progressing. Keep the
+                    // short local request transaction atomic as well, and restore the authoritative
+                    // state without re-entering this SET handler.
                     callback(undefined);
+                    this.queueSwitchUpdate(accessory);
                     return;
                 }
+
+                const attempt = beginElevatorCall(context.callState);
+                if(!attempt.accepted) {
+                    if(context.callState === ElevatorCallState.UNKNOWN) {
+                        callback(new Error("Elevator call status is not ready."));
+                    } else {
+                        // Coalesce duplicate writes during the same HTTP request, and mirror the
+                        // disabled app button once the server reports progressing.
+                        callback(undefined);
+                    }
+                    this.queueSwitchUpdate(accessory);
+                    return;
+                }
+
                 const device = this.findDevice(EXTERIOR_ELEVATOR_DEVICE.deviceId);
                 if(!device) {
                     callback(new Error(`Unknown device: ${context.deviceId}`));
                     return;
                 }
-                if(called) {
-                    // Claim the lock before the round trip, not after it. The call takes
-                    // seconds (2.2-5.2s measured) and the arrival frame can land inside that
-                    // window - in one call it was 3ms from the response, and a car already
-                    // waiting on this floor reports arrival almost immediately. Claiming it
-                    // up front also doubles as the sentinel below, because the arrival
-                    // handler is the only other writer and it always clears the flag.
-                    context.switchLocked = true;
 
-                    let success: boolean;
-                    try {
-                        success = await this.client.sendElevatorCallQuery();
-                    } catch(error) {
-                        // The lock is claimed before the round trip, so a throw here would
-                        // strand it: no fallback timer is armed yet and `callback` never runs,
-                        // leaving the switch locked on with nothing able to release it.
-                        context.switchLocked = false;
-                        this.log.error("Could not call the elevator: %s", (error as Error)?.message || error);
-                        callback(new Error("Failed to set the device state."));
-                        return;
-                    }
-                    if(!success) {
-                        context.switchLocked = false;
-                        callback(new Error("Failed to set the device state."));
-                        return;
-                    }
-                    if(!context.switchLocked) {
-                        // Arrival landed while we were awaiting. It already released the
-                        // switch, so do not arm the fallback timer - but HAP commits the
-                        // requested `true` on a successful set, so push the release again.
+                context.callState = attempt.state;
+                const requestSequence = ++context.requestSequence;
+                this.armSwitchFallback(accessory, device);
+
+                let success = false;
+                let requestError: unknown;
+                try {
+                    success = await this.client.sendElevatorCallQuery();
+                } catch(error) {
+                    requestError = error;
+                }
+
+                const current = this.getAccessoryInterface(accessory);
+                const isCurrentRequest = current.requestSequence === requestSequence;
+                if(!success) {
+                    if(isCurrentRequest && current.callState === ElevatorCallState.PROGRESSING) {
+                        // The WebSocket status is authoritative, just as it is in the original UI.
+                        // Keep the switch active if the server confirmed movement even when the
+                        // independent HTTP response failed or was lost.
+                        this.log.warn("Elevator call HTTP response failed after the server reported progressing.");
                         callback(undefined);
-                        setTimeout(() => {
-                            this.getService(accessory, this.api.hap.Service.Switch)
-                                .getCharacteristic(this.api.hap.Characteristic.On)
-                                .updateValue(false);
-                        }, 0);
-                        return;
+                    } else {
+                        if(isCurrentRequest && current.callState === ElevatorCallState.REQUESTING) {
+                            this.releaseCall(accessory);
+                        }
+                        if(requestError) {
+                            this.log.error("Could not call the elevator: %s", (requestError as Error)?.message || requestError);
+                        }
+                        callback(new Error("Failed to set the device state."));
                     }
-                    if(context.switchTimer) clearTimeout(context.switchTimer);
+                    this.queueSwitchUpdate(accessory);
+                    return;
+                }
 
-                    context.switchTimer = setTimeout(() => {
-                        if(context.switchTimer) clearTimeout(context.switchTimer);
-
-                        context.switchTimer = undefined;
-                        context.switchLocked = false;
-                        context.callProgressing = false;
-                        this.getService(accessory, this.api.hap.Service.Switch)
-                            .getCharacteristic(this.api.hap.Characteristic.On)
-                            .updateValue(false);
-                        // Safety net only - `unprogressing` releases the switch on arrival.
-                        // Kept long so a slow car is not cut off; it exists for the case where
-                        // the arrival frame never lands (socket reconnect, silently dropped call).
-                    }, (device.duration?.elevator || ELEVATOR_CALL_FALLBACK_TIMEOUT_SECONDS) * 1000);
+                // Server events may have advanced or completed this request during the HTTP
+                // round trip. The HTTP success itself does not mean the car is moving; the app
+                // disables its button only after `progressing`. If that status has not arrived,
+                // return to idle and let a later WebSocket event authoritatively activate it.
+                if(isCurrentRequest) {
+                    const completedState = completeElevatorCallRequest(current.callState);
+                    if(completedState !== current.callState) {
+                        this.releaseCall(accessory);
+                    }
                 }
                 callback(undefined);
+                this.queueSwitchUpdate(accessory);
             })
             .on(CharacteristicEventTypes.GET, (callback: CharacteristicGetCallback) => {
                 const context = this.getAccessoryInterface(accessory);
-                callback(undefined, context.switchLocked);
+                context.callState = normalizeElevatorCallState(context.callState);
+                callback(undefined, isElevatorCallActive(context.callState));
             });
 
         this.getService(accessory, this.api.hap.Service.MotionSensor)
@@ -145,79 +209,54 @@ export default class ElevatorAccessories extends Accessories<ElevatorAccessoryIn
     register() {
         super.register();
 
-        this.addListener((data) => {
-            if(!data) return;
-            const rerection = data["rerection"];
-
-            const device = this.findDevice(EXTERIOR_ELEVATOR_DEVICE.deviceId);
-            if(!device) return;
-
-            const accessory = this.findAccessory(device.deviceId);
-            if(!accessory) return;
-
-            if(rerection === "progressing") {
-                // The server acknowledged the call and the car is moving. Arrives ~60ms after
-                // the request, well before the HTTP response.
-                this.getAccessoryInterface(accessory).callProgressing = true;
-                return;
-            }
-            // Arrival signals. `unprogressing` (from `elevator_call_request`) is the definitive
-            // one; `down`/`up` (from `elevate_call`, the arriving car's direction) land alongside
-            // it and are treated as the same arrival. Both are routed here now - see the elevator
-            // branch in `smart-elife-client.ts`. The duplicate handling below absorbs the extra frame.
-            if(!["unprogressing", "down", "up"].includes(rerection)) return;
-
-            const context = this.getAccessoryInterface(accessory);
-            context.callProgressing = false;
-            if(context.switchTimer)
-                clearTimeout(context.switchTimer);
-            context.switchLocked = false;
-            context.switchTimer = undefined;
-
-            // The arrival notification is surfaced to HomeKit as motion, so the call switch
-            // is released on the same signal. Pushing `On` here is mandatory: the timer that
-            // would otherwise release it has just been cleared, so without this the switch
-            // stays lit in HomeKit until the user toggles it by hand.
-            this.getService(accessory, this.api.hap.Service.Switch)
-                .getCharacteristic(this.api.hap.Characteristic.On)
-                .updateValue(false);
-
-            // `elevator_call_request` arrives repeated within the same tick; without clearing
-            // first, each duplicate leaks a timer that would cut the motion window short.
-            if(context.motionTimer)
-                clearTimeout(context.motionTimer);
-            context.motionDetected = true;
-            context.motionTimer = setTimeout(() => {
-                const context = this.getAccessoryInterface(accessory);
-                if(context.motionTimer)
-                    clearTimeout(context.motionTimer);
-                context.motionTimer = undefined;
-                context.motionDetected = false;
-
-                accessory.getService(this.api.hap.Service.MotionSensor)
-                    ?.setCharacteristic(this.api.hap.Characteristic.MotionDetected, context.motionDetected);
-            }, ELEVATOR_MOTION_DURATION_TIMEOUT_SECONDS * 1000);
-
-            accessory.getService(this.api.hap.Service.MotionSensor)
-                ?.setCharacteristic(this.api.hap.Characteristic.MotionDetected, context.motionDetected);
-        });
-
-        setTimeout(async () => {
-            if(!this.findDevice(EXTERIOR_ELEVATOR_DEVICE.deviceId)) {
-                return;
-            }
-            const device = EXTERIOR_ELEVATOR_DEVICE;
+        // Create/reset the virtual accessory before the WebSocket connects. The app requests
+        // elevator status immediately on open, and dropping that first snapshot would leave the
+        // HomeKit switch permanently in the unknown/loading state.
+        const device = EXTERIOR_ELEVATOR_DEVICE;
+        if(this.findDevice(device.deviceId)) {
             this.addOrGetAccessory({
                 deviceId: device.deviceId,
                 deviceType: device.deviceType,
                 displayName: device.displayName,
                 init: true,
                 switchTimer: undefined,
-                switchLocked: false,
-                callProgressing: false,
+                callState: ElevatorCallState.UNKNOWN,
+                requestSequence: 0,
                 motionTimer: undefined,
                 motionDetected: false,
             });
-        }, 1000);
+        }
+
+        this.addListener((data, _error, metadata) => {
+            if(!data) return;
+
+            const configuredDevice = this.findDevice(EXTERIOR_ELEVATOR_DEVICE.deviceId);
+            if(!configuredDevice) return;
+
+            const accessory = this.findAccessory(configuredDevice.deviceId);
+            if(!accessory) return;
+
+            const context = this.getAccessoryInterface(accessory);
+            const transition = reduceElevatorServerEvent(
+                normalizeElevatorCallState(context.callState),
+                metadata?.action,
+                data["rerection"],
+            );
+            if(!transition.recognized) return;
+
+            context.callState = transition.state;
+            if(isElevatorCallActive(transition.state)) {
+                this.armSwitchFallback(accessory, configuredDevice);
+            } else {
+                this.clearSwitchTimer(context);
+            }
+            this.updateSwitch(accessory);
+
+            // Only `elevate_call` is the app's arrival event. `unprogressing` is an idle status
+            // and releases the switch without fabricating motion during startup or reconnect.
+            if(transition.arrival) {
+                this.triggerArrivalMotion(accessory);
+            }
+        });
     }
 }

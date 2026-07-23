@@ -18,6 +18,7 @@ import {parseWebSocketCredentials, WebSocketCredentials} from "./parsers/ws-cred
 import {parseDeviceList} from "./parsers/device-parsers";
 import {HTMLCandidate, parseWallPadVersionFromHtmlCandidates, WALLPAD_VERSION_3_0} from "./parsers/version-parsers";
 import {EXTERIOR_ELEVATOR_DEVICE} from "../../homebridge/accessories/smart-elife/elevator";
+import {createElevatorStatusRequest} from "./elevator-protocol";
 import {setInterval} from "timers";
 import * as https from "node:https";
 import * as dns from "node:dns";
@@ -28,7 +29,11 @@ export interface ListenerError {
     message?: string
 }
 
-export type Listener = (data: any | undefined, error: ListenerError) => void;
+export interface ListenerMetadata {
+    action?: string
+}
+
+export type Listener = (data: any | undefined, error: ListenerError, metadata?: ListenerMetadata) => void;
 export type PushListener = (title: string | undefined, message: string | undefined) => void;
 
 interface ListenerInfo {
@@ -115,6 +120,9 @@ export default class SmartELifeClient {
                 }
                 return ClientResponseCode.SUCCESS;
             },
+            async onOpen(client: SmartELifeClient) {
+                await client.requestElevatorStatus();
+            },
             async onMessage(client: SmartELifeClient, json: any) {
                 const header = json["header"];
                 const action = json["action"];
@@ -133,13 +141,9 @@ export default class SmartELifeClient {
                 } else if(!!action && action.startsWith("event_")) {
                     deviceTypeString = action.slice("event_".length);
                 } else if(!!action && (action.startsWith("elevator_call_") || action === "elevate_call")) {
-                    // Elevator events, both routed to the elevator listener:
-                    // - `elevator_call_request` (`rerection: "progressing" | "unprogressing"`) -
-                    //   `unprogressing` is the arrival signal; there is no `elevator_call_arrive`.
-                    // - `elevate_call` (`rerection: "down" | "up"`) - the arriving car's direction,
-                    //   delivered alongside the arrival. Folded in explicitly (it does NOT match the
-                    //   `elevator_call_` prefix) so it no longer falls through to the `else` warn on
-                    //   every arrival; `accessories/smart-elife/elevator.ts` treats it as an arrival.
+                    // `elevator_call_request` reports whether a call is progressing, while
+                    // `elevate_call` is the arrival event. Preserve the action in listener metadata
+                    // so the accessory does not mistake an idle status snapshot for an arrival.
                     deviceTypeString = "elevator";
                 } else {
                     client.log.warn("Unexpected message format: %s", JSON.stringify(json));
@@ -151,7 +155,7 @@ export default class SmartELifeClient {
 
                 for(const info of client.listeners) {
                     if(info.deviceType === deviceType) {
-                        info.listener(json["data"], { code: Number(status), message });
+                        info.listener(json["data"], { code: Number(status), message }, { action });
                     }
                 }
             }
@@ -830,6 +834,10 @@ export default class SmartELifeClient {
                 listener.listener(deviceGroup, { code: Number("000"), message: undefined });
             }
         }
+    }
+
+    private async requestElevatorStatus() {
+        await this.sendJson(createElevatorStatusRequest(this.getWebSocketCredentials()));
     }
 
     async fetchDevices(): Promise<Device[]> {
