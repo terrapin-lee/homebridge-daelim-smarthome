@@ -12,6 +12,12 @@ import {
 interface HeaterAccessoryInterface extends ActiveAccessoryInterface {
     currentTemperature: number
     desiredTemperature: number
+    mode?: HeaterMode
+}
+
+enum HeaterMode {
+    HEAT = "heat",
+    AWAY = "out",
 }
 
 const MIN_TEMPERATURE = 5;
@@ -65,6 +71,10 @@ export default class HeaterAccessories extends ActiveAccessories<HeaterAccessory
                     callback(undefined);
                     return;
                 }
+                if(context.mode !== HeaterMode.HEAT) {
+                    callback(this.api.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
+                    return;
+                }
                 const device = this.findDevice(context.deviceId);
                 if(!device) {
                     callback(new Error(`Unknown device: ${context.deviceId}`));
@@ -108,6 +118,8 @@ export default class HeaterAccessories extends ActiveAccessories<HeaterAccessory
         const context = this.getAccessoryInterface(accessory);
         if(!context.active)
             return this.api.hap.Characteristic.CurrentHeaterCoolerState.INACTIVE;
+        if(context.mode !== HeaterMode.HEAT)
+            return this.api.hap.Characteristic.CurrentHeaterCoolerState.IDLE;
         if(context.desiredTemperature > context.currentTemperature)
             return this.api.hap.Characteristic.CurrentHeaterCoolerState.HEATING;
         // Powered on but already at/above the target: idling, not inactive. Reporting
@@ -120,10 +132,11 @@ export default class HeaterAccessories extends ActiveAccessories<HeaterAccessory
 
         this.addDeviceListener((devices) => {
             for(const device of devices) {
-                const active = device.op["status"] === "on";
+                const active = (device.op["control"] ?? device.op["status"]) === "on";
                 const currentTemperature = device.op["current_temp"] ? Number(device.op["current_temp"]) : MIN_TEMPERATURE || MIN_TEMPERATURE;
                 const targetTemperature = device.op["desired_temp"] ?? device.op["set_temp"];
                 const desiredTemperature = targetTemperature ? Number(targetTemperature) : MIN_TEMPERATURE || MIN_TEMPERATURE;
+                const mode = device.op["mode"] as HeaterMode | undefined;
                 const accessory = this.addOrGetAccessory({
                     deviceId: device.deviceId,
                     deviceType: device.deviceType,
@@ -132,6 +145,7 @@ export default class HeaterAccessories extends ActiveAccessories<HeaterAccessory
                     active,
                     currentTemperature,
                     desiredTemperature,
+                    mode,
                 });
                 if(!accessory) continue;
 
@@ -140,7 +154,9 @@ export default class HeaterAccessories extends ActiveAccessories<HeaterAccessory
                     ?.setCharacteristic(this.api.hap.Characteristic.Active, context.active
                         ? this.api.hap.Characteristic.Active.ACTIVE
                         : this.api.hap.Characteristic.Active.INACTIVE)
-                    .setCharacteristic(this.api.hap.Characteristic.HeatingThresholdTemperature, this.getThresholdTemperature(accessory));
+                    .setCharacteristic(this.api.hap.Characteristic.CurrentHeaterCoolerState, this.getCurrentState(accessory))
+                    .setCharacteristic(this.api.hap.Characteristic.HeatingThresholdTemperature, this.getThresholdTemperature(accessory))
+                    .setCharacteristic(this.api.hap.Characteristic.CurrentTemperature, this.getCurrentTemperature(accessory));
             }
         });
     }
