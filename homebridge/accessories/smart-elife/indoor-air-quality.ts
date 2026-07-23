@@ -30,6 +30,7 @@ enum AirQuality {
     BAD = "bad",
     NORMAL = "normal",
     GOOD = "good",
+    UNKNOWN = "unknown",
 }
 
 namespace AirQuality {
@@ -39,15 +40,22 @@ namespace AirQuality {
             case "bad": return AirQuality.BAD;
             case "normal": return AirQuality.NORMAL;
             case "good": return AirQuality.GOOD;
-            default: throw new Error(`Prohibited air quality: ${quality}`);
+            // Unexpected `css` value: degrade gracefully instead of throwing, so one odd
+            // reading can't abort the whole polling cycle (and the humidity aggregation
+            // the A/C dehumidifier depends on).
+            default: return AirQuality.UNKNOWN;
         }
     }
-    export function score(quality: AirQuality): number {
+    // Maps a sensor grade to a HomeKit `Characteristic.AirQuality` value:
+    //   0 = UNKNOWN, 1 = EXCELLENT, 2 = GOOD, 3 = FAIR, 4 = INFERIOR, 5 = POOR.
+    // Note: `good` must map to EXCELLENT (1), NOT 0 — 0 renders as "Unknown" in Home.
+    export function toHomeKitAirQuality(quality: AirQuality): number {
         switch(quality) {
-            case AirQuality.VERY_BAD: return 5;
-            case AirQuality.BAD: return 3;
-            case AirQuality.NORMAL: return 1;
-            case AirQuality.GOOD: return 0;
+            case AirQuality.GOOD: return 1;      // EXCELLENT
+            case AirQuality.NORMAL: return 2;    // GOOD
+            case AirQuality.BAD: return 4;       // INFERIOR
+            case AirQuality.VERY_BAD: return 5;  // POOR
+            case AirQuality.UNKNOWN: return 0;   // UNKNOWN
         }
     }
 }
@@ -67,11 +75,15 @@ export default class IndoorAirQualityAccessories extends Accessories<IndoorAirQu
     }
 
     getAirQuality(context: IndoorAirQualityAccessoryInterface): CharacteristicValue {
-        const q = [ context.pm10, context.pm2_5, context.co2, context.vocs ]
-            .map((q) => AirQuality.score(q.quality));
-        const sum = q.reduce((acc, n) => acc + n, 0);
-        const avg = sum / q.length;
-        return parseInt(avg.toFixed(0)) as CharacteristicValue;
+        // Overall air quality reflects the worst-graded pollutant (the standard HomeKit
+        // convention), ignoring UNKNOWN(0) grades unless every pollutant is unknown.
+        const values = [ context.pm10, context.pm2_5, context.co2, context.vocs ]
+            .map((q) => AirQuality.toHomeKitAirQuality(q.quality))
+            .filter((v) => v > 0);
+        if(values.length === 0) {
+            return 0 as CharacteristicValue; // UNKNOWN
+        }
+        return Math.max(...values) as CharacteristicValue;
     }
 
     async fetchAirQuality() {
@@ -81,13 +93,13 @@ export default class IndoorAirQualityAccessories extends Accessories<IndoorAirQu
         this.skippedFirstPollingMessage = true;
 
         const response = await this.client.sendHttpJson("/monitoring/getAirList.ajax", { location: "all" });
-        if(!response["data"]) {
-            const message = response["result"]["errorMessage"].replace(/(<br\/>)/gi, " ");
-            const code = response["result"]["status"];
+        if(!response || !response["data"]) {
+            const message = (response?.["result"]?.["errorMessage"] ?? "unknown reason").replace(/(<br\/>)/gi, " ");
+            const code = response?.["result"]?.["status"] ?? "";
             this.log.warn("Devices (%s) not found: (%s) %s", this.deviceType.toString(), code, message);
             return;
         }
-        const devices = response["data"]["list"];
+        const devices = response["data"]["list"] || [];
         let humiditySum = 0;
         let humidityCount = 0;
         let index = 0;
@@ -98,24 +110,30 @@ export default class IndoorAirQualityAccessories extends Accessories<IndoorAirQu
             const device = this.findDevice(deviceId);
             if(!device) continue;
 
-            const humidity = Number(info["humi"]);
-            if(Number.isFinite(humidity)) {
-                humiditySum += humidity;
-                humidityCount += 1;
-            }
+            // Isolate per-device parsing so one malformed reading cannot abort the rest of
+            // the cycle (including the humidity aggregation below).
+            try {
+                const humidity = Number(info["humi"]);
+                if(Number.isFinite(humidity)) {
+                    humiditySum += humidity;
+                    humidityCount += 1;
+                }
 
-            this.addOrGetAccessory({
-                deviceId: device.deviceId,
-                deviceType: device.deviceType,
-                displayName: device.displayName,
-                init: true,
-                pm10: { density: info["pm10"]["value"], quality: AirQuality.parse(info["pm10"]["css"]) },
-                pm2_5: { density: info["pm25"]["value"], quality: AirQuality.parse(info["pm25"]["css"]) },
-                co2: { density: info["co2"]["value"], quality: AirQuality.parse(info["co2"]["css"]) },
-                vocs: { density: info["vocs"]["value"], quality: AirQuality.parse(info["vocs"]["css"]) },
-                temperature: Number(info["temp"]),
-                humidity,
-            });
+                this.addOrGetAccessory({
+                    deviceId: device.deviceId,
+                    deviceType: device.deviceType,
+                    displayName: device.displayName,
+                    init: true,
+                    pm10: { density: Number(info["pm10"]["value"]), quality: AirQuality.parse(info["pm10"]["css"]) },
+                    pm2_5: { density: Number(info["pm25"]["value"]), quality: AirQuality.parse(info["pm25"]["css"]) },
+                    co2: { density: Number(info["co2"]["value"]), quality: AirQuality.parse(info["co2"]["css"]) },
+                    vocs: { density: Number(info["vocs"]["value"]), quality: AirQuality.parse(info["vocs"]["css"]) },
+                    temperature: Number(info["temp"]),
+                    humidity,
+                });
+            } catch(e: any) {
+                this.log.warn("Could not parse air-quality reading for %s: %s", device.displayName, e?.message || e);
+            }
         }
         if(humidityCount > 0) {
             setGlobalIndoorRelativeHumidity(humiditySum / humidityCount);
@@ -173,7 +191,14 @@ export default class IndoorAirQualityAccessories extends Accessories<IndoorAirQu
     register() {
         super.register();
 
-        setTimeout(this.fetchAirQuality.bind(this), 1000); // immediate run (asynchronously)
-        setInterval(this.fetchAirQuality.bind(this), INDOOR_AIR_QUALITY_POLLING_INTERVAL_MILLISECONDS);
+        // Wrap the scheduled polls so a rejected fetch (network/CSRF failure) is logged
+        // instead of surfacing as an unhandled promise rejection.
+        const run = () => {
+            this.fetchAirQuality().catch((e: any) => {
+                this.log.warn("Air-quality polling failed: %s", e?.message || e);
+            });
+        };
+        setTimeout(run, 1000); // immediate run (asynchronously)
+        setInterval(run, INDOOR_AIR_QUALITY_POLLING_INTERVAL_MILLISECONDS);
     }
 }
