@@ -42,6 +42,7 @@ export enum DeviceType {
     INDOOR_AIR_QUALITY = "indoorair",
     ELEVATOR = "elevator",
     DOOR = "door",
+    SMART_DOOR = "smartdoor",
     VEHICLE = "vehicle",
     CAMERA = "camera",
 }
