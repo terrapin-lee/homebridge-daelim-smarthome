@@ -73,7 +73,10 @@ export default class HeaterAccessories extends ActiveAccessories<HeaterAccessory
                 context.desiredTemperature = value as number;
                 this.defer(device.deviceId, this.setDeviceState({
                     ...device, op: {
-                        value: this.getThresholdTemperature(accessory),
+                        // The wallpad heater keys its target temperature as `set_temp`
+                        // (confirmed against the live device op, and matching the sibling
+                        // A/C). `value` was copy-pasted from lightbulb and had no effect.
+                        set_temp: this.getThresholdTemperature(accessory),
                     },
                 }));
                 callback(undefined);
@@ -103,10 +106,13 @@ export default class HeaterAccessories extends ActiveAccessories<HeaterAccessory
 
     getCurrentState(accessory: PlatformAccessory): CharacteristicValue {
         const context = this.getAccessoryInterface(accessory);
-        if(context.active && context.desiredTemperature > context.currentTemperature)
-            return this.api.hap.Characteristic.CurrentHeaterCoolerState.HEATING;
-        else
+        if(!context.active)
             return this.api.hap.Characteristic.CurrentHeaterCoolerState.INACTIVE;
+        if(context.desiredTemperature > context.currentTemperature)
+            return this.api.hap.Characteristic.CurrentHeaterCoolerState.HEATING;
+        // Powered on but already at/above the target: idling, not inactive. Reporting
+        // INACTIVE here contradicts the ACTIVE state and mirrors the sibling A/C's IDLE.
+        return this.api.hap.Characteristic.CurrentHeaterCoolerState.IDLE;
     }
 
     register() {
