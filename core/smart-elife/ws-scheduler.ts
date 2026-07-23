@@ -8,6 +8,7 @@ export interface WebSocketInjector {
     getJSessionId(client: SmartELifeClient): string | undefined;
     onRefresh(client: SmartELifeClient): Promise<ClientResponseCode>;
     onResilient(client: SmartELifeClient): Promise<ClientResponseCode>;
+    onOpen(client: SmartELifeClient): Promise<void>;
     onMessage(client: SmartELifeClient, json: any): void;
 }
 
@@ -225,6 +226,9 @@ export default class WebSocketScheduler {
                 ws.on("open", () => {
                     this.wsReconnectAttempt = 0;
                     this.log.info(`[WebSocket] connected: ${url}`);
+                    void this.injector.onOpen(this.client).catch((e) => {
+                        this.log.warn(`[WebSocket] post-connect initialization failed: ${(e as any)?.message || e}`);
+                    });
                 });
 
                 ws.on("message", async (data: WebSocket.RawData) => {
