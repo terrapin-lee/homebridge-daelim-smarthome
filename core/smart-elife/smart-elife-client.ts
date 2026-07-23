@@ -132,8 +132,14 @@ export default class SmartELifeClient {
                     }
                 } else if(!!action && action.startsWith("event_")) {
                     deviceTypeString = action.slice("event_".length);
-                } else if(!!action && action.startsWith("elevator_call_")) {
-                    // Special condition for elevator arrival notification via MotionSensor.
+                } else if(!!action && (action.startsWith("elevator_call_") || action === "elevate_call")) {
+                    // Elevator events, both routed to the elevator listener:
+                    // - `elevator_call_request` (`rerection: "progressing" | "unprogressing"`) -
+                    //   `unprogressing` is the arrival signal; there is no `elevator_call_arrive`.
+                    // - `elevate_call` (`rerection: "down" | "up"`) - the arriving car's direction,
+                    //   delivered alongside the arrival. Folded in explicitly (it does NOT match the
+                    //   `elevator_call_` prefix) so it no longer falls through to the `else` warn on
+                    //   every arrival; `accessories/smart-elife/elevator.ts` treats it as an arrival.
                     deviceTypeString = "elevator";
                 } else {
                     client.log.warn("Unexpected message format: %s", JSON.stringify(json));
