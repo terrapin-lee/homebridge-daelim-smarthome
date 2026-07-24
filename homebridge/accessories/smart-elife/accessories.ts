@@ -97,7 +97,7 @@ export default class Accessories<T extends AccessoryInterface> {
 
         const removals = [];
         for(const service of accessory.services) {
-            if(this.isSupportedService(service)) {
+            if(this.isSupportedService(service, accessory)) {
                 continue;
             }
             this.log.debug("The service %s is no longer supported from accessory: %s (%s)", service.constructor.name, context.displayName, this.deviceType.toString());
@@ -114,7 +114,7 @@ export default class Accessories<T extends AccessoryInterface> {
         this.log.info("Identifying %s", accessory.displayName);
     }
 
-    private isSupportedService(service: Service): boolean {
+    protected isSupportedService(service: Service, _: PlatformAccessory): boolean {
         for(const t of this.serviceTypes) {
             if(t.UUID === service.UUID) {
                 return true;
@@ -123,7 +123,7 @@ export default class Accessories<T extends AccessoryInterface> {
         return false;
     }
 
-    private isSupportedServiceType(serviceType: ServiceType): boolean {
+    protected isSupportedServiceType(serviceType: ServiceType, _: PlatformAccessory): boolean {
         for(const t of this.serviceTypes) {
             if(t.UUID === serviceType.UUID) {
                 return true;
@@ -133,7 +133,7 @@ export default class Accessories<T extends AccessoryInterface> {
     }
 
     protected getService(accessory: PlatformAccessory, serviceType: ServiceType): Service {
-        if(!this.isSupportedServiceType(serviceType)) {
+        if(!this.isSupportedServiceType(serviceType, accessory)) {
             throw new Error(`Service \`${serviceType.name}\` is not registered as a supported service type in \`${this.deviceType.toString()}\` accessories.`);
         }
         const context = this.getAccessoryInterface(accessory);
