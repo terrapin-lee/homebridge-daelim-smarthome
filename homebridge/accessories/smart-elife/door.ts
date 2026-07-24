@@ -27,13 +27,13 @@ export const EXTERIOR_FRONT_DOOR_DEVICE: Device = {
     deviceId: "CMFDOR001",
     disabled: false,
 };
-// export const EXTERIOR_COMMUNAL_DOOR_DEVICE: Device = {
-//     displayName: "외부 공동현관",
-//     name: "공동현관",
-//     deviceType: DeviceType.DOOR,
-//     deviceId: "CMFDOR002",
-//     disabled: false,
-// }
+export const EXTERIOR_COMMUNAL_DOOR_DEVICE: Device = {
+    displayName: "외부 공동현관",
+    name: "공동현관",
+    deviceType: DeviceType.DOOR,
+    deviceId: "CMFDOR002",
+    disabled: false,
+};
 export const DOOR_TIMEOUT_DURATION_SECONDS = 5; // 5 seconds
 const LOW_BATTERY_THRESHOLD = 20;
 
@@ -73,12 +73,14 @@ export default class DoorAccessories extends Accessories<DoorAccessoryInterface>
                 callback(undefined, context.motionDetected);
             });
 
-        if(!this.smartDoorDevice) {
+        const context = this.getAccessoryInterface(accessory);
+        // Only the household front door mirrors the smart door lock; the communal
+        // door has no control channel and stays a motion-only accessory.
+        if(!this.smartDoorDevice || context.deviceId !== EXTERIOR_FRONT_DOOR_DEVICE.deviceId) {
             this.removeSmartDoorServices(accessory);
             return;
         }
 
-        const context = this.getAccessoryInterface(accessory);
         context.smartDoorDeviceId = this.smartDoorDevice.deviceId;
 
         const lock = this.getService(accessory, this.api.hap.Service.LockMechanism);
@@ -167,14 +169,15 @@ export default class DoorAccessories extends Accessories<DoorAccessoryInterface>
         return Math.max(0, Math.min(100, Math.round(level)));
     }
 
-    private ensureDoorAccessory(): PlatformAccessory | undefined {
-        const device = this.findDevice(EXTERIOR_FRONT_DOOR_DEVICE.deviceId);
+    private ensureDoorAccessory(doorDevice: Device): PlatformAccessory | undefined {
+        const device = this.findDevice(doorDevice.deviceId);
         if(!device) return undefined;
 
         const existing = this.findAccessory(device.deviceId);
         const context = existing
             ? this.getAccessoryInterface(existing)
             : undefined;
+        const isFrontDoor = doorDevice.deviceId === EXTERIOR_FRONT_DOOR_DEVICE.deviceId;
         return this.addOrGetAccessory({
             deviceId: device.deviceId,
             deviceType: device.deviceType,
@@ -182,9 +185,9 @@ export default class DoorAccessories extends Accessories<DoorAccessoryInterface>
             init: true,
             motionTimer: context?.motionTimer,
             motionDetected: context?.motionDetected ?? false,
-            smartDoorDeviceId: this.smartDoorDevice?.deviceId,
-            secured: context?.secured,
-            batteryLevel: context?.batteryLevel,
+            smartDoorDeviceId: isFrontDoor ? this.smartDoorDevice?.deviceId : undefined,
+            secured: isFrontDoor ? context?.secured : undefined,
+            batteryLevel: isFrontDoor ? context?.batteryLevel : undefined,
         });
     }
 
@@ -225,7 +228,7 @@ export default class DoorAccessories extends Accessories<DoorAccessoryInterface>
                 this.log.warn("Unknown device: %s", doorDevice.deviceId);
                 return;
             }
-            const accessory = this.ensureDoorAccessory();
+            const accessory = this.ensureDoorAccessory(doorDevice);
             if(!accessory) {
                 this.log.warn("Unknown accessory: %s", device.deviceId);
                 return;
@@ -257,6 +260,7 @@ export default class DoorAccessories extends Accessories<DoorAccessoryInterface>
     register() {
         super.register();
         this.registerPushListener(PushType.FRONT_DOOR, EXTERIOR_FRONT_DOOR_DEVICE);
+        this.registerPushListener(PushType.COMMUNAL_DOOR, EXTERIOR_COMMUNAL_DOOR_DEVICE);
 
         if(this.smartDoorDevice) {
             this.addDeviceListener((devices) => {
@@ -264,14 +268,15 @@ export default class DoorAccessories extends Accessories<DoorAccessoryInterface>
                     .find((device) => device.deviceId === this.smartDoorDevice?.deviceId);
                 if(!smartDoor) return;
 
-                const accessory = this.ensureDoorAccessory();
+                const accessory = this.ensureDoorAccessory(EXTERIOR_FRONT_DOOR_DEVICE);
                 if(!accessory) return;
                 this.updateSmartDoorState(accessory, smartDoor.op);
             }, DeviceType.SMART_DOOR);
         }
 
         setTimeout(() => {
-            this.ensureDoorAccessory();
+            this.ensureDoorAccessory(EXTERIOR_FRONT_DOOR_DEVICE);
+            this.ensureDoorAccessory(EXTERIOR_COMMUNAL_DOOR_DEVICE);
         }, 1000);
     }
 }
